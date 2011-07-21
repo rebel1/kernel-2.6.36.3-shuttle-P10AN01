@@ -74,7 +74,11 @@ static struct tegra_das_platform_data tegra_das_pdata = {
 			.device_property = {
 				.num_channels = 2,
 				.bits_per_sample = 16,
+#ifdef SHUTTLE_48KHZ_AUDIO				
 				.rate = 48000,
+#else
+				.rate = 44100,
+#endif
 				.dac_dap_data_comm_format =
 						dac_dap_data_format_all,
 			},
@@ -182,7 +186,11 @@ static struct tegra_das_platform_data tegra_das_pdata = {
 static struct tegra_audio_platform_data tegra_spdif_pdata = {
 	.dma_on = true,  /* use dma by default */
 #if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+#	ifdef SHUTTLE_48KHZ_AUDIO
 	.spdif_clk_rate = 6144000,
+#	else
+	.spdif_clk_rate = 5644800,
+#	endif
 #endif
 };
 
@@ -201,8 +209,13 @@ static struct tegra_audio_platform_data tegra_audio_pdata[] = {
 #else
 		.i2s_master		= true,		/* CODEC is slave for audio */
 		.dma_on			= true,  	/* use dma by default */
+#ifdef SHUTTLE_48KHZ_AUDIO						
 		.i2s_master_clk = 48000,
 		.i2s_clk_rate 	= 12288000,
+#else
+		.i2s_master_clk = 44100,
+		.i2s_clk_rate 	= 11289600,
+#endif
 		.dap_clk	  	= "clk_dev1",
 		.audio_sync_clk = "audio_2x",
 		.mode			= I2S_BIT_FORMAT_I2S,

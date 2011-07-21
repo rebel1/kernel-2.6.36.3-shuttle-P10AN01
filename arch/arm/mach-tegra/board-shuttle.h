@@ -61,6 +61,9 @@
 
 #define DYNAMIC_GPU_MEM 1						/* use dynamic memory for GPU */
 
+
+/*#define SHUTTLE_48KHZ_AUDIO*/ /* <- define this if you want 48khz audio sampling rate instead of 44100Hz */
+
 // TPS6586x GPIOs as registered 
 #define PMU_GPIO_BASE		(TEGRA_NR_GPIOS) 
 #define PMU_GPIO0 			(PMU_GPIO_BASE)

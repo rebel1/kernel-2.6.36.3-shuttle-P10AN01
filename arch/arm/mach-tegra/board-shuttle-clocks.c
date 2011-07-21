@@ -98,8 +98,13 @@ static __initdata struct tegra_clk_init_table shuttle_clk_init_table[] = {
 	{ "pll_a",		"pll_p_out1",	 73728000,	true},		/* always on - audio clocks */
 	{ "pll_a_out0",	"pll_a",		 18432000,	true},		/* always on - i2s audio */
 #else
+#	ifdef SHUTTLE_48KHZ_AUDIO
 	{ "pll_a",		"pll_p_out1",	 73728000,	true},		/* always on - audio clocks */
 	{ "pll_a_out0",	"pll_a",		 12288000,	true},		/* always on - i2s audio */
+#	else
+	{ "pll_a",		"pll_p_out1",	 56448000,	true},		/* always on - audio clocks */
+	{ "pll_a_out0",	"pll_a",		 11289600,	true},		/* always on - i2s audio */
+#	endif
 #endif
 
 	/* pll_d and pll_d_out0 are clock sources for HDMI output */
@@ -144,12 +149,21 @@ static __initdata struct tegra_clk_init_table shuttle_clk_init_table[] = {
 	{ "spdif_in",	"pll_p",		 36000000,	false},
 	{ "spdif_out",  "pll_a_out0",  	  6144000,  false},
 #else
+#	ifdef SHUTTLE_48KHZ_AUDIO
 	{ "i2s1",   	"pll_a_out0",    12288000,  false},		/* i2s.0 */
 	{ "i2s2",		"pll_a_out0",    12288000,	false},		/* i2s.1 */
 	{ "audio", 		"pll_a_out0",    12288000,  false},
 	{ "audio_2x",	"audio",		 24576000,	false},
 	{ "spdif_in",	"pll_p",		 36000000,	false},
 	{ "spdif_out",  "pll_a_out0", 	  6144000,  false},
+#	else
+	{ "i2s1",   	"pll_a_out0",    11289600,  false},		/* i2s.0 */
+	{ "i2s2",		"pll_a_out0",    11289600,	false},		/* i2s.1 */
+	{ "audio", 		"pll_a_out0",    11289600,  false},
+	{ "audio_2x",	"audio",		 22579200,	false},
+	{ "spdif_in",	"pll_p",		 36000000,	false},
+	{ "spdif_out",  "pll_a_out0", 	  5644800,  false},
+#	endif
 #endif
 	
 	/* cdev[1-2] take the configuration (clock parents) from the pinmux config, 
@@ -164,7 +178,11 @@ static __initdata struct tegra_clk_init_table shuttle_clk_init_table[] = {
 #ifdef ALC5624_IS_MASTER		
 	{ CDEV1,   NULL /*"pll_a_out0"*/,18432000,  false},		/* used as audio CODEC MCLK */	
 #else
+#	ifdef SHUTTLE_48KHZ_AUDIO
 	{ CDEV1,   NULL /*"pll_a_out0"*/,12288000,  false},		/* used as audio CODEC MCLK */	
+#	else
+	{ CDEV1,   NULL /*"pll_a_out0"*/,11289600,  false},		/* used as audio CODEC MCLK */	
+#	endif
 #endif
 	{ CDEV2,   NULL /*"pll_p_out4"*/,26000000,  false}, 	/* probably used as USB clock - perhaps 24mhz ?*/	
 
