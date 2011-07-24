@@ -42,8 +42,9 @@ struct shuttle_pm_camera_data {
 	struct regulator *regulator;
 #ifdef CONFIG_PM
 	int pre_resume_state;
+	int keep_on_in_suspend;
 #endif
-	int state;
+	int powered_up;
 };
 
 
@@ -53,7 +54,7 @@ static void __shuttle_pm_camera_power(struct device *dev, unsigned int on)
 	struct shuttle_pm_camera_data *camera_data = dev_get_drvdata(dev);
 
 	/* Avoid turning it on if already on */
-	if (camera_data->state == on)
+	if (camera_data->powered_up == on)
 		return;
 	
 	if (on) {
@@ -67,18 +68,16 @@ static void __shuttle_pm_camera_power(struct device *dev, unsigned int on)
 		gpio_set_value(SHUTTLE_CAMERA_POWER, 1); /* Powerup */
 		msleep(2);
 
-		
 	} else {
 		dev_info(dev, "Disabling Camera\n");
 		
 		gpio_set_value(SHUTTLE_CAMERA_POWER, 0); /* Powerdown */
 		
 		regulator_disable(camera_data->regulator);
-
 	}
 	
 	/* store new state */
-	camera_data->state = on;
+	camera_data->powered_up = on;
 	
 }
 
@@ -89,9 +88,14 @@ static ssize_t camera_read(struct device *dev, struct device_attribute *attr,
 	struct shuttle_pm_camera_data *camera_data = dev_get_drvdata(dev);
 	
 	if (!strcmp(attr->attr.name, "power_on")) {
-		if (camera_data->state)
+		if (camera_data->powered_up)
 			ret = 1;
 	}
+#ifdef CONFIG_PM
+	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
+		ret = camera_data->keep_on_in_suspend;
+	}
+#endif
 
 	if (!ret) {
 		return strlcpy(buf, "0\n", 3);
@@ -104,17 +108,25 @@ static ssize_t camera_write(struct device *dev, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
 	unsigned long on = simple_strtoul(buf, NULL, 10);
-	/*struct shuttle_pm_camera_data *camera_data = dev_get_drvdata(dev);*/
+	struct shuttle_pm_camera_data *camera_data = dev_get_drvdata(dev);
 
 	if (!strcmp(attr->attr.name, "power_on")) {
-		__shuttle_pm_camera_power(dev, on);
-	} 
+		__shuttle_pm_camera_power(dev, !!on);
+	}
+#ifdef CONFIG_PM
+	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
+		camera_data->keep_on_in_suspend = on;
+	}
+#endif
 
 	return count;
 }
 
 static DEVICE_ATTR(power_on, 0644, camera_read, camera_write);
 static DEVICE_ATTR(reset, 0644, camera_read, camera_write);
+#ifdef CONFIG_PM
+static DEVICE_ATTR(keep_on_in_suspend, 0644, camera_read, camera_write);
+#endif
 
 #ifdef CONFIG_PM
 static int shuttle_camera_suspend(struct platform_device *pdev, pm_message_t state)
@@ -123,9 +135,12 @@ static int shuttle_camera_suspend(struct platform_device *pdev, pm_message_t sta
 
 	dev_dbg(&pdev->dev, "suspending\n");
 
-	camera_data->pre_resume_state = camera_data->state;
-	__shuttle_pm_camera_power(&pdev->dev, 0);
-
+	camera_data->pre_resume_state = camera_data->powered_up;
+	
+	if (!camera_data->keep_on_in_suspend)
+		__shuttle_pm_camera_power(&pdev->dev, 0);
+	else
+		dev_warn(&pdev->dev, "keeping camera ON during suspend\n");
 	return 0;
 }
 
@@ -139,12 +154,15 @@ static int shuttle_camera_resume(struct platform_device *pdev)
 }
 #else
 #define shuttle_camera_suspend	NULL
-#define shuttle_camera_resume		NULL
+#define shuttle_camera_resume	NULL
 #endif
 
 static struct attribute *shuttle_camera_sysfs_entries[] = {
 	&dev_attr_power_on.attr,
 	&dev_attr_reset.attr,
+#ifdef CONFIG_PM
+	&dev_attr_keep_on_in_suspend.attr,
+#endif
 	NULL
 };
 
@@ -156,6 +174,9 @@ static struct attribute_group shuttle_camera_attr_group = {
 /* ----- Initialization/removal -------------------------------------------- */
 static int __init shuttle_camera_probe(struct platform_device *pdev)
 {
+	/* default-on */
+	const int default_state = 1;
+
 	struct regulator *regulator;
 	struct shuttle_pm_camera_data *camera_data;
 
@@ -176,12 +197,14 @@ static int __init shuttle_camera_probe(struct platform_device *pdev)
 
 	camera_data->regulator = regulator;
 
-	
 	/* Init io pins and disable camera */
 	gpio_request(SHUTTLE_CAMERA_POWER, "camera_power");
 	gpio_direction_output(SHUTTLE_CAMERA_POWER, 0);
 
-	dev_info(&pdev->dev, "Camera power management driver registered\n");
+	/* Set the default state */
+	__shuttle_pm_camera_power(&pdev->dev, default_state);
+	
+	dev_info(&pdev->dev, "Camera power management driver loaded\n");
 	
 	return sysfs_create_group(&pdev->dev.kobj, &shuttle_camera_attr_group);
 }
@@ -189,11 +212,10 @@ static int __init shuttle_camera_probe(struct platform_device *pdev)
 static int shuttle_camera_remove(struct platform_device *pdev)
 {
 	struct shuttle_pm_camera_data *camera_data = dev_get_drvdata(&pdev->dev);
+	if (!camera_data)
+		return 0;
 
 	sysfs_remove_group(&pdev->dev.kobj, &shuttle_camera_attr_group);
-
-	if (!camera_data || !camera_data->regulator)
-		return 0;
 
 	__shuttle_pm_camera_power(&pdev->dev, 0);
 	

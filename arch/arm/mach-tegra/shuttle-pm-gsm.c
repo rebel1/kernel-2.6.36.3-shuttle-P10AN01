@@ -41,12 +41,12 @@
 
 struct shuttle_pm_gsm_data {
 	struct regulator *regulator[2];
-	int pre_resume_state;
-	int state;
+	struct rfkill *rfkill;
 #ifdef CONFIG_PM
+	int pre_resume_state;
 	int keep_on_in_suspend;
 #endif
-	struct rfkill *rfkill;
+	int powered_up;
 };
 
 /* Power control */
@@ -55,7 +55,7 @@ static void __shuttle_pm_gsm_toggle_radio(struct device *dev, unsigned int on)
 	struct shuttle_pm_gsm_data *gsm_data = dev_get_drvdata(dev);
 
 	/* Avoid turning it on or off if already in that state */
-	if (gsm_data->state == on)
+	if (gsm_data->powered_up == on)
 		return;
 	
 	if (on) {
@@ -75,9 +75,10 @@ static void __shuttle_pm_gsm_toggle_radio(struct device *dev, unsigned int on)
 	}
 	
 	/* store new state */
-	gsm_data->state = on;
+	gsm_data->powered_up = on;
 }
 
+/* rfkill */
 static int gsm_rfkill_set_block(void *data, bool blocked)
 {
 	struct device *dev = data;
@@ -89,7 +90,7 @@ static int gsm_rfkill_set_block(void *data, bool blocked)
 }
 
 static const struct rfkill_ops shuttle_gsm_rfkill_ops = {
-       .set_block = gsm_rfkill_set_block,
+    .set_block = gsm_rfkill_set_block,
 };
 
 static ssize_t gsm_read(struct device *dev, struct device_attribute *attr,
@@ -99,11 +100,9 @@ static ssize_t gsm_read(struct device *dev, struct device_attribute *attr,
 	struct shuttle_pm_gsm_data *gsm_data = dev_get_drvdata(dev);
 	
 	if (!strcmp(attr->attr.name, "power_on")) {
-		if (gsm_data->state)
-			ret = 1;
+		ret = gsm_data->powered_up;
 	} else if (!strcmp(attr->attr.name, "reset")) {
-		if (gsm_data->state == 0)
-			ret = 1;
+		ret = !gsm_data->powered_up;
 	}
 #ifdef CONFIG_PM
 	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
@@ -111,11 +110,7 @@ static ssize_t gsm_read(struct device *dev, struct device_attribute *attr,
 	}
 #endif 	
 
-	if (!ret) {
-		return strlcpy(buf, "0\n", 3);
-	} else {
-		return strlcpy(buf, "1\n", 3);
-	}
+	return strlcpy(buf, (!ret) ? "0\n" : "1\n", 3);
 }
 
 static ssize_t gsm_write(struct device *dev, struct device_attribute *attr,
@@ -125,22 +120,32 @@ static ssize_t gsm_write(struct device *dev, struct device_attribute *attr,
 	struct shuttle_pm_gsm_data *gsm_data = dev_get_drvdata(dev);
 
 	if (!strcmp(attr->attr.name, "power_on")) {
-		rfkill_set_sw_state(gsm_data->rfkill, on ? 1 : 0);
-		__shuttle_pm_gsm_toggle_radio(dev, on);
+	
+		rfkill_set_sw_state(gsm_data->rfkill, !on); /* here it receives the blocked state */
+		__shuttle_pm_gsm_toggle_radio(dev, !!on);
+		
 	} else if (!strcmp(attr->attr.name, "reset")) {
+	
 		/* reset is low-active, so we need to invert */
+		rfkill_set_sw_state(gsm_data->rfkill, !!on); /* here it receives the blocked state */
 		__shuttle_pm_gsm_toggle_radio(dev, !on);
+		
 	}
 #ifdef CONFIG_PM
 	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
 		gsm_data->keep_on_in_suspend = on;
 	}
 #endif 
+
 	return count;
 }
 
 static DEVICE_ATTR(power_on, 0644, gsm_read, gsm_write);
 static DEVICE_ATTR(reset, 0644, gsm_read, gsm_write);
+#ifdef CONFIG_PM
+static DEVICE_ATTR(keep_on_in_suspend, 0644, gsm_read, gsm_write);
+#endif
+
 
 #ifdef CONFIG_PM
 static int shuttle_gsm_suspend(struct platform_device *pdev, pm_message_t state)
@@ -149,7 +154,7 @@ static int shuttle_gsm_suspend(struct platform_device *pdev, pm_message_t state)
 
 	dev_dbg(&pdev->dev, "suspending\n");
 
-	gsm_data->pre_resume_state = gsm_data->state;
+	gsm_data->pre_resume_state = gsm_data->powered_up;
 	if (!gsm_data->keep_on_in_suspend)
 		__shuttle_pm_gsm_toggle_radio(&pdev->dev, 0);
 	else
@@ -174,6 +179,9 @@ static int shuttle_gsm_resume(struct platform_device *pdev)
 static struct attribute *shuttle_gsm_sysfs_entries[] = {
 	&dev_attr_power_on.attr,
 	&dev_attr_reset.attr,
+#ifdef CONFIG_PM	
+	&dev_attr_keep_on_in_suspend.attr,
+#endif
 	NULL
 };
 
@@ -184,6 +192,9 @@ static struct attribute_group shuttle_gsm_attr_group = {
 
 static int __init shuttle_gsm_probe(struct platform_device *pdev)
 {
+	/* default-on */
+	const int default_blocked_state = 0;
+
 	struct rfkill *rfkill;
 	struct regulator *regulator[2];
 	struct shuttle_pm_gsm_data *gsm_data;
@@ -209,7 +220,6 @@ static int __init shuttle_gsm_probe(struct platform_device *pdev)
 	if (IS_ERR(regulator[1])) {
 		dev_err(&pdev->dev, "unable to get regulator for usb\n");
 		regulator_put(regulator[0]);
-		gsm_data->regulator[0] = NULL;
 		kfree(gsm_data);
 		dev_set_drvdata(&pdev->dev, NULL);
 		return -ENODEV;
@@ -226,22 +236,25 @@ static int __init shuttle_gsm_probe(struct platform_device *pdev)
 	if (!rfkill) {
 		dev_err(&pdev->dev, "Failed to allocate rfkill\n");
 		regulator_put(regulator[1]);
-		gsm_data->regulator[1] = NULL;
 		regulator_put(regulator[0]);
-		gsm_data->regulator[0] = NULL;
 		kfree(gsm_data);
 		dev_set_drvdata(&pdev->dev, NULL);
 		return -ENOMEM;
 	}
 	gsm_data->rfkill = rfkill;
 
-	/* Disable bluetooth */
-    rfkill_init_sw_state(rfkill, 0);
+	/* Set the default state */
+	rfkill_init_sw_state(rfkill, default_blocked_state);
+	__shuttle_pm_gsm_toggle_radio(&pdev->dev, !default_blocked_state);
 
 	ret = rfkill_register(rfkill);
 	if (ret) {
-		rfkill_destroy(rfkill);
 		dev_err(&pdev->dev, "Failed to register rfkill\n");
+		rfkill_destroy(rfkill);		
+		regulator_put(regulator[1]);
+		regulator_put(regulator[0]);
+		kfree(gsm_data);
+		dev_set_drvdata(&pdev->dev, NULL);
 		return ret;
 	}
 
@@ -253,27 +266,21 @@ static int __init shuttle_gsm_probe(struct platform_device *pdev)
 static int shuttle_gsm_remove(struct platform_device *pdev)
 {
 	struct shuttle_pm_gsm_data *gsm_data = dev_get_drvdata(&pdev->dev);
-
-	sysfs_remove_group(&pdev->dev.kobj, &shuttle_gsm_attr_group);
-
 	if (!gsm_data)
 		return 0;
 	
-	if (gsm_data->rfkill) {
-		rfkill_unregister(gsm_data->rfkill);
-		rfkill_destroy(gsm_data->rfkill);
-	}
+	sysfs_remove_group(&pdev->dev.kobj, &shuttle_gsm_attr_group);
 
-	if (gsm_data->regulator[0] && gsm_data->regulator[1])
-		__shuttle_pm_gsm_toggle_radio(&pdev->dev, 0);
+	rfkill_unregister(gsm_data->rfkill);
+	rfkill_destroy(gsm_data->rfkill);
 
-	if (gsm_data->regulator[0]) 
-		regulator_put(gsm_data->regulator[0]);
-		
-	if (gsm_data->regulator[1]) 
-		regulator_put(gsm_data->regulator[1]);
+	__shuttle_pm_gsm_toggle_radio(&pdev->dev, 0);
+
+	regulator_put(gsm_data->regulator[0]);
+	regulator_put(gsm_data->regulator[1]);
 
 	kfree(gsm_data);
+	dev_set_drvdata(&pdev->dev, NULL);
 
 	return 0;
 }

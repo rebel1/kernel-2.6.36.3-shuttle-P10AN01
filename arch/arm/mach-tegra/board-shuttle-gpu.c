@@ -66,9 +66,7 @@ static int shuttle_backlight_notify(struct device *unused, int brightness)
 	return brightness;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 static int shuttle_disp1_check_fb(struct device *dev, struct fb_info *info);
-#endif
 
 static struct platform_pwm_backlight_data shuttle_backlight_data = {
 	.pwm_id		= SHUTTLE_BL_PWM_ID,
@@ -78,10 +76,8 @@ static struct platform_pwm_backlight_data shuttle_backlight_data = {
 	.init		= shuttle_backlight_init,
 	.exit		= shuttle_backlight_exit,
 	.notify		= shuttle_backlight_notify,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 	/* Only toggle backlight on fb blank notifications for disp1 */
 	.check_fb	= shuttle_disp1_check_fb,
-#endif
 };
 
 static struct platform_device shuttle_panel_bl_driver = {
@@ -433,12 +429,11 @@ static struct nvhost_device shuttle_disp1_device = {
 	},
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+
 static int shuttle_disp1_check_fb(struct device *dev, struct fb_info *info)
 {
 	return info->device == &shuttle_disp1_device.dev;
 }
-#endif
 
 static struct nvhost_device shuttle_disp2_device = {
 	.name		= "tegradc",

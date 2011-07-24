@@ -130,6 +130,8 @@ static struct regulator_consumer_supply tps658621_ldo3_supply[] = { /* 3V3 */
    lcd rail (required for crt out) : VDDIO_LCD (VDD_1V8)
    Bluetooth : VDDHOSTIF_BT -> LDO4 (AON:VDD_1V8)
    Wlan : VDDIO_WLAN (AON:VDD_1V8)
+   
+   Unless we want to die, this voltage can't be turned off
 */
 static struct regulator_consumer_supply tps658621_ldo4_supply[] = { /* VDD IO VI */
 	REGULATOR_SUPPLY("avdd_osc", NULL),        
@@ -275,7 +277,7 @@ static struct regulator_init_data ldo2_data
 static struct regulator_init_data ldo3_data 		 
 	= ADJ_REGULATOR_INIT(ldo3,1250, 3350, 0, 0); // 3300 
 static struct regulator_init_data ldo4_data 		 
-	= ADJ_REGULATOR_INIT(ldo4,1700, 2000, 0, 0); // 1800
+	= ADJ_REGULATOR_INIT(ldo4,1700, 2000, 1, 0); // 1800
 static struct regulator_init_data ldo5_data 		 
 	= ADJ_REGULATOR_INIT(ldo5,1250, 3350, 0, 1); // 2850
 static struct regulator_init_data ldo6_data 		 

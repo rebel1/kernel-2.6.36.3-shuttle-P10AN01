@@ -27,11 +27,11 @@
 
 struct shuttle_pm_gps_data {
 	struct regulator *regulator[2];
-	int pre_resume_state;
-	int state;
 #ifdef CONFIG_PM
+	int pre_resume_state;
 	int keep_on_in_suspend;
 #endif
+	int powered_up;
 };
 
 /* Power control */
@@ -40,7 +40,7 @@ static void __shuttle_pm_gps_toggle_radio(struct device *dev, unsigned int on)
 	struct shuttle_pm_gps_data *gps_data = dev_get_drvdata(dev);
 
 	/* Avoid turning it on or off if already in that state */
-	if (gps_data->state == on)
+	if (gps_data->powered_up == on)
 		return;
 	
 	if (on) {
@@ -60,7 +60,7 @@ static void __shuttle_pm_gps_toggle_radio(struct device *dev, unsigned int on)
 	}
 	
 	/* store new state */
-	gps_data->state = on;
+	gps_data->powered_up = on;
 }
 
 
@@ -72,16 +72,15 @@ static ssize_t shuttle_gps_read(struct device *dev,
 
 	if (!strcmp(attr->attr.name, "power_on") ||
 	    !strcmp(attr->attr.name, "pwron")) {
-		ret = gps_data->state;
-#ifdef CONFIG_PM
-	} else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
-		ret = gps_data->keep_on_in_suspend;
-#endif
+		ret = gps_data->powered_up;
 	}
-	if (ret)
-		return strlcpy(buf, "1\n", 3);
-	else
-		return strlcpy(buf, "0\n", 3);
+#ifdef CONFIG_PM
+	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
+		ret = gps_data->keep_on_in_suspend;
+	}
+#endif
+
+	return strlcpy(buf, (!ret) ? "0\n" : "1\n", 3);
 }
 
 static ssize_t shuttle_gps_write(struct device *dev,
@@ -94,13 +93,22 @@ static ssize_t shuttle_gps_write(struct device *dev,
 	if (!strcmp(attr->attr.name, "power_on") ||
 	    !strcmp(attr->attr.name, "pwron")) {
 		__shuttle_pm_gps_toggle_radio(dev,on);
-#ifdef CONFIG_PM
-	} else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
-		gps_data->keep_on_in_suspend = on;
-#endif
 	}
+#ifdef CONFIG_PM
+	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
+		gps_data->keep_on_in_suspend = on;
+	}
+#endif
+
 	return count;
 }
+
+static DEVICE_ATTR(power_on, 0644, shuttle_gps_read, shuttle_gps_write);
+static DEVICE_ATTR(pwron, 0644, shuttle_gps_read, shuttle_gps_write);
+#ifdef CONFIG_PM
+static DEVICE_ATTR(keep_on_in_suspend, 0644, shuttle_gps_read, shuttle_gps_write);
+#endif
+
 
 #ifdef CONFIG_PM
 static int shuttle_pm_gps_suspend(struct platform_device *pdev,
@@ -108,7 +116,7 @@ static int shuttle_pm_gps_suspend(struct platform_device *pdev,
 {
 	struct shuttle_pm_gps_data *gps_data = dev_get_drvdata(&pdev->dev);
 	
-	gps_data->pre_resume_state = gps_data->state;
+	gps_data->pre_resume_state = gps_data->powered_up;
 	if (!gps_data->keep_on_in_suspend)
 		__shuttle_pm_gps_toggle_radio(&pdev->dev,0);
 	else
@@ -123,16 +131,15 @@ static int shuttle_pm_gps_resume(struct platform_device *pdev)
 	return 0;
 }
 
-static DEVICE_ATTR(keep_on_in_suspend, 0644, shuttle_gps_read, shuttle_gps_write);
 #else
 #define shuttle_pm_gps_suspend	NULL
 #define shuttle_pm_gps_resume	NULL
 #endif
 
-static DEVICE_ATTR(power_on, 0644, shuttle_gps_read, shuttle_gps_write);
 
 static struct attribute *shuttle_gps_sysfs_entries[] = {
 	&dev_attr_power_on.attr,
+	&dev_attr_pwron.attr,
 #ifdef CONFIG_PM
 	&dev_attr_keep_on_in_suspend.attr,
 #endif
@@ -146,6 +153,9 @@ static struct attribute_group shuttle_gps_attr_group = {
 
 static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 {
+	/* start with gps enabled */
+	int default_state = 1;
+	
 	struct regulator *regulator[2];
 	struct shuttle_pm_gps_data *gps_data;
 	
@@ -154,7 +164,6 @@ static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "no memory for context\n");
 		return -ENOMEM;
 	}
-	
 	dev_set_drvdata(&pdev->dev, gps_data);
 
 	regulator[0] = regulator_get(&pdev->dev, "avdd_usb_pll");
@@ -170,7 +179,6 @@ static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 	if (IS_ERR(regulator[1])) {
 		dev_err(&pdev->dev, "unable to get regulator for usb\n");
 		regulator_put(regulator[0]);
-		gps_data->regulator[0] = NULL;
 		kfree(gps_data);
 		dev_set_drvdata(&pdev->dev, NULL);
 		return -ENODEV;
@@ -181,6 +189,9 @@ static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 	/* Init io pins */
 	shuttle_3g_gps_init();
 
+	/* Set the default state */
+	__shuttle_pm_gps_toggle_radio(&pdev->dev, default_state);
+	
 	dev_info(&pdev->dev, "GPS power management driver loaded\n");
 	
 	return sysfs_create_group(&pdev->dev.kobj,
@@ -190,22 +201,19 @@ static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 static int shuttle_pm_gps_remove(struct platform_device *pdev)
 {
 	struct shuttle_pm_gps_data *gps_data = dev_get_drvdata(&pdev->dev);
-
-	sysfs_remove_group(&pdev->dev.kobj, &shuttle_gps_attr_group);
-	
 	if (!gps_data)
 		return 0;
 	
-	if (gps_data->regulator[0] && gps_data->regulator[1])
-		__shuttle_pm_gps_toggle_radio(&pdev->dev, 0);
+	sysfs_remove_group(&pdev->dev.kobj, &shuttle_gps_attr_group);
+	
+	__shuttle_pm_gps_toggle_radio(&pdev->dev, 0);
 
-	if (gps_data->regulator[0]) 
-		regulator_put(gps_data->regulator[0]);
-		
-	if (gps_data->regulator[1]) 
-		regulator_put(gps_data->regulator[1]);
+	regulator_put(gps_data->regulator[0]);
+	regulator_put(gps_data->regulator[1]);
 
 	kfree(gps_data);
+	dev_set_drvdata(&pdev->dev, NULL);
+	
 	return 0;
 }
 

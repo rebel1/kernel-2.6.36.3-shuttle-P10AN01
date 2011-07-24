@@ -45,8 +45,11 @@ struct shuttle_pm_bt_data {
 	struct regulator *regulator;
 	struct clk *clk;
 	struct rfkill *rfkill;
+#ifdef CONFIG_PM	
 	int pre_resume_state;
-	int state;
+	int keep_on_in_suspend;
+#endif
+	int powered_up;
 };
 
 /* Power control */
@@ -55,7 +58,7 @@ static void __shuttle_pm_bt_toggle_radio(struct device *dev, unsigned int on)
 	struct shuttle_pm_bt_data *bt_data = dev_get_drvdata(dev);
 
 	/* Avoid turning it on if already on */
-	if (bt_data->state == on)
+	if (bt_data->powered_up == on)
 		return;
 	
 	if (on) {
@@ -80,7 +83,7 @@ static void __shuttle_pm_bt_toggle_radio(struct device *dev, unsigned int on)
 	}
 	
 	/* store new state */
-	bt_data->state = on;
+	bt_data->powered_up = on;
 }
 
 static int bt_rfkill_set_block(void *data, bool blocked)
@@ -94,7 +97,7 @@ static int bt_rfkill_set_block(void *data, bool blocked)
 }
 
 static const struct rfkill_ops shuttle_bt_rfkill_ops = {
-       .set_block = bt_rfkill_set_block,
+	.set_block = bt_rfkill_set_block,
 };
 
 static ssize_t bt_read(struct device *dev, struct device_attribute *attr,
@@ -104,18 +107,17 @@ static ssize_t bt_read(struct device *dev, struct device_attribute *attr,
 	struct shuttle_pm_bt_data *bt_data = dev_get_drvdata(dev);
 	
 	if (!strcmp(attr->attr.name, "power_on")) {
-		if (bt_data->state)
-			ret = 1;
+		ret = bt_data->powered_up;
 	} else if (!strcmp(attr->attr.name, "reset")) {
-		if (bt_data->state == 0)
-			ret = 1;
+		ret = !bt_data->powered_up;
 	}
-
-	if (!ret) {
-		return strlcpy(buf, "0\n", 3);
-	} else {
-		return strlcpy(buf, "1\n", 3);
+#ifdef CONFIG_PM
+	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
+		ret = bt_data->keep_on_in_suspend;
 	}
+#endif
+	
+	return strlcpy(buf, (!ret) ? "0\n" : "1\n", 3);
 }
 
 static ssize_t bt_write(struct device *dev, struct device_attribute *attr,
@@ -125,18 +127,31 @@ static ssize_t bt_write(struct device *dev, struct device_attribute *attr,
 	struct shuttle_pm_bt_data *bt_data = dev_get_drvdata(dev);
 
 	if (!strcmp(attr->attr.name, "power_on")) {
-		rfkill_set_sw_state(bt_data->rfkill, on ? 1 : 0);
-		__shuttle_pm_bt_toggle_radio(dev, on);
+	
+		rfkill_set_sw_state(bt_data->rfkill, !on); /* blocked state */
+		__shuttle_pm_bt_toggle_radio(dev, !!on);
+		
 	} else if (!strcmp(attr->attr.name, "reset")) {
+	
 		/* reset is low-active, so we need to invert */
+		rfkill_set_sw_state(bt_data->rfkill, !!on); /* blocked state */
 		__shuttle_pm_bt_toggle_radio(dev, !on);
+		
 	}
-
+#ifdef CONFIG_PM
+	else if (!strcmp(attr->attr.name, "keep_on_in_suspend")) {
+		bt_data->keep_on_in_suspend = on;
+	}
+#endif
+	
 	return count;
 }
 
 static DEVICE_ATTR(power_on, 0644, bt_read, bt_write);
 static DEVICE_ATTR(reset, 0644, bt_read, bt_write);
+#ifdef CONFIG_PM
+static DEVICE_ATTR(keep_on_in_suspend, 0644, bt_read, bt_write);
+#endif
 
 #ifdef CONFIG_PM
 static int shuttle_bt_suspend(struct platform_device *pdev, pm_message_t state)
@@ -145,8 +160,12 @@ static int shuttle_bt_suspend(struct platform_device *pdev, pm_message_t state)
 
 	dev_dbg(&pdev->dev, "suspending\n");
 
-	bt_data->pre_resume_state = bt_data->state;
-	__shuttle_pm_bt_toggle_radio(&pdev->dev, 0);
+	bt_data->pre_resume_state = bt_data->powered_up;
+	
+	if (!bt_data->keep_on_in_suspend)
+		__shuttle_pm_bt_toggle_radio(&pdev->dev, 0);
+	else
+		dev_warn(&pdev->dev, "keeping Bluetooth ON during suspend\n");
 
 	return 0;
 }
@@ -167,6 +186,9 @@ static int shuttle_bt_resume(struct platform_device *pdev)
 static struct attribute *shuttle_bt_sysfs_entries[] = {
 	&dev_attr_power_on.attr,
 	&dev_attr_reset.attr,
+#ifdef CONFIG_PM
+	&dev_attr_keep_on_in_suspend.attr,
+#endif
 	NULL
 };
 
@@ -177,6 +199,9 @@ static struct attribute_group shuttle_bt_attr_group = {
 
 static int __init shuttle_bt_probe(struct platform_device *pdev)
 {
+	/* default-on */
+	const int default_blocked_state = 0;
+
 	struct rfkill *rfkill;
 	struct regulator *regulator;
 	struct clk *clk;
@@ -195,16 +220,19 @@ static int __init shuttle_bt_probe(struct platform_device *pdev)
 	regulator = regulator_get(&pdev->dev, "vddhostif_bt");
 	if (IS_ERR(regulator)) {
 		dev_err(&pdev->dev, "Failed to get regulator\n");
-		ret = -ENODEV;
-		goto err4;
+		kfree(bt_data);
+		dev_set_drvdata(&pdev->dev, NULL);
+		return -ENODEV;
 	}
 	bt_data->regulator = regulator;
 	
 	clk = clk_get(&pdev->dev, "blink");
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "Failed to get clock\n");
-		ret = -ENODEV;
-		goto err3;
+		regulator_put(regulator);
+		kfree(bt_data);
+		dev_set_drvdata(&pdev->dev, NULL);
+		return -ENODEV;
 	}
 	bt_data->clk = clk;
 
@@ -217,52 +245,45 @@ static int __init shuttle_bt_probe(struct platform_device *pdev)
 
 	if (!rfkill) {
 		dev_err(&pdev->dev, "Failed to allocate rfkill\n");
-		ret = -ENOMEM;
-		goto err2;
+		clk_put(clk);
+		regulator_put(regulator);
+		kfree(bt_data);
+		dev_set_drvdata(&pdev->dev, NULL);
+		return -ENOMEM;
 	}
 	bt_data->rfkill = rfkill;
 
-	/* Disable bluetooth */
-    rfkill_init_sw_state(rfkill, 0);
+	/* Set the default state */
+	rfkill_init_sw_state(rfkill, default_blocked_state);
+	__shuttle_pm_bt_toggle_radio(&pdev->dev, !default_blocked_state);
+	
 
 	ret = rfkill_register(rfkill);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register rfkill\n");
-		goto err1;
+		rfkill_destroy(rfkill);
+		clk_put(clk);
+		regulator_put(regulator);
+		kfree(bt_data);
+		dev_set_drvdata(&pdev->dev, NULL);
+		return ret;
 	}
 
 	dev_info(&pdev->dev, "Bluetooth RFKill driver registered\n");	
 	
 	return sysfs_create_group(&pdev->dev.kobj, &shuttle_bt_attr_group);
-	
-err1:
-	rfkill_destroy(rfkill);
-	bt_data->rfkill = NULL;
-err2:
-	clk_put(clk);
-	bt_data->clk = NULL;
-err3:
-	regulator_put(regulator);
-	bt_data->regulator = NULL;
-err4:
-	kfree(bt_data);
-	dev_set_drvdata(&pdev->dev, NULL);
-	return ret;
 }
 
 static int shuttle_bt_remove(struct platform_device *pdev)
 {
 	struct shuttle_pm_bt_data *bt_data = dev_get_drvdata(&pdev->dev);
-
+	if (!bt_data)
+		return 0;
+	
 	sysfs_remove_group(&pdev->dev.kobj, &shuttle_bt_attr_group);
 
-	if (bt_data->rfkill) {
-		rfkill_unregister(bt_data->rfkill);
-		rfkill_destroy(bt_data->rfkill);
-	}
-
-	if (!bt_data || !bt_data->regulator)
-		return 0;
+	rfkill_unregister(bt_data->rfkill);
+	rfkill_destroy(bt_data->rfkill);
 
 	__shuttle_pm_bt_toggle_radio(&pdev->dev, 0);
 
@@ -270,8 +291,11 @@ static int shuttle_bt_remove(struct platform_device *pdev)
 	clk_put(bt_data->clk);
 
 	kfree(bt_data);
+	dev_set_drvdata(&pdev->dev, NULL);
+	
 	return 0;
 }
+
 static struct platform_driver shuttle_bt_driver = {
 	.probe		= shuttle_bt_probe,
 	.remove		= shuttle_bt_remove,
