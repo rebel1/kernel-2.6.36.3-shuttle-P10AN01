@@ -424,22 +424,22 @@ static struct mtd_partition shuttle_nand_partitions[] = {
 	[3] = {
 		.name		= "system",
 		.offset		=  23680*1024,
-		.size		= 125440*1024,
+		.size		= 155000*1024,
 	},
 	[4] = {
 		.name		= "cache",
-		.offset		= 149632*1024,
+		.offset		= 178680*1024,
 		.size		=  32768*1024,
 	},
 	[5] = {
 		.name		= "staging",
-		.offset		= 182912*1024,
+		.offset		= 211448*1024,
 		.size		=   4096*1024,
 	},
 	[6] = {
 		.name		= "userdata",
-		.offset		= 187520*1024,
-		.size		= 336256*1024,
+		.offset		= 215544*1024,
+		.size		= 308744*1024,
 	},
 };
 
