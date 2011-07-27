@@ -1362,10 +1362,10 @@ static int __devinit tegra_nvec_probe(struct platform_device *pdev)
 				
 		/* We verify success, not size, as there are firmwares out there that
 		   respond with less bytes than expected */
-		if (ret < 0) {
+		/*if (ret < 0) {
 			dev_err(nvec->dev, "NvEC not found\n");
-			goto failed3;
-		}
+			goto failed3; 
+		} */ 
 
 		dev_info(nvec->dev, "Nvidia Embedded controller driver loaded\n");
 		dev_info(nvec->dev, "Firmware version %02x.%02x.%02x / %02x\n",
